@@ -35,6 +35,41 @@ You can the following code to generate images more quickly by:
 ```bash
 python src/inference/inference.py
 ```
+
+#### Using the HuggingFace Diffusers Pipeline
+
+AeroGen also provides a native [HuggingFace Diffusers](https://github.com/huggingface/diffusers) custom pipeline (`AeroGenPipeline`). This wraps the model components in a standard `DiffusionPipeline` interface with a `DDIMScheduler`:
+
+```bash
+python src/inference/inference_pipeline.py
+```
+
+You can also use the pipeline directly in your own scripts:
+
+```python
+from pipeline_aerogen import AeroGenPipeline
+
+# Load from config + checkpoint
+pipeline = AeroGenPipeline.from_pretrained_checkpoint(
+    config_path="configs/stable-diffusion/dual/v1-finetune-DIOR-R.yaml",
+    checkpoint_path="./ckpt/aerogen_diorr_last.ckpt",
+    device="cuda",
+)
+
+# Generate images
+result = pipeline(
+    prompt="an aerial image with airplane parked on the ground",
+    bboxes=bboxes,               # (B, N, 8) rotated bbox coords
+    category_conditions=cats,     # (B, N, 768) category embeddings
+    mask_conditions=masks,        # (B, N, H, W) spatial masks
+    mask_vector=mask_vec,         # (B, N) valid-object indicators
+    num_inference_steps=50,
+    guidance_scale=7.5,
+)
+
+# result.images is a list of PIL images
+result.images[0].save("output.jpg")
+```
 You can find the relevant layout files for the presentation in `./demo/` where you can find the relevant layout files for the display.
 The following is the example of the generated image.
 <div align=center>
