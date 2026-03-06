@@ -40,7 +40,7 @@ class MockVAE(nn.Module):
         self.dummy = nn.Parameter(torch.zeros(1))
 
     def decode(self, z):
-        # Return deterministic output derived from input for reproducibility
+        # Deterministic output derived from input; uses repeat to mimic VAE 8x upscale
         b, c, h, w = z.shape
         out = z[:, :3].repeat(1, 1, 8, 8)
         return out

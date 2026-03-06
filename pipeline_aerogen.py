@@ -27,7 +27,6 @@ class AeroGenPipelineOutput(BaseOutput):
 
     Attributes:
         images: List of generated PIL images.
-        nsfw_content_detected: Not used, kept for compatibility.
     """
 
     images: List[Image.Image]

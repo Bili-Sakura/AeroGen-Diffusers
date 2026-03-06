@@ -66,5 +66,5 @@ for batch in tqdm(dataloader):
             output_file = os.path.join(output_dir, filename.replace("txt", "jpg"))
             image.save(output_file)
 
-            print(f"Generation images saved at {output_file}")
+            print(f"Generated images saved at {output_file}")
             print("ok")
