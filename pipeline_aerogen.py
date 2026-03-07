@@ -4,10 +4,22 @@ AeroGen Pipeline using native HuggingFace Diffusers.
 This module provides a DiffusionPipeline subclass that wraps AeroGen's
 custom UNet, condition encoder, VAE, and text encoder into a standard
 diffusers pipeline interface, using DDIMScheduler for the denoising loop.
+
+Usage:
+    # Load from config + checkpoint
+    pipeline = AeroGenPipeline.from_pretrained_checkpoint(
+        config_path="configs/.../v1-finetune-DIOR-R.yaml",
+        checkpoint_path="./ckpt/aerogen_diorr_last.ckpt",
+    )
+
+    # Load from diffusers-format (after convert_to_diffusers.py)
+    pipeline = AeroGenPipeline.from_pretrained("/path/to/AeroGen")
 """
 
+import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Union
 
 import einops
@@ -110,9 +122,12 @@ class AeroGenPipeline(DiffusionPipeline):
                 checkpoint_path, device="cpu"
             )
         else:
-            state_dict = torch.load(
-                checkpoint_path, map_location=torch.device("cpu")
-            )
+            load_kw = {"map_location": torch.device("cpu")}
+            try:
+                state_dict = torch.load(checkpoint_path, **load_kw, weights_only=True)
+            except (TypeError, Exception):
+                load_kw["weights_only"] = False
+                state_dict = torch.load(checkpoint_path, **load_kw)
             state_dict = state_dict.get("state_dict", state_dict)
 
         model.load_state_dict(state_dict)
@@ -149,6 +164,93 @@ class AeroGenPipeline(DiffusionPipeline):
         )
         pipeline = pipeline.to(device)
         return pipeline
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: Union[str, Path],
+        device: Optional[Union[str, torch.device]] = None,
+        **kwargs,
+    ) -> "AeroGenPipeline":
+        """Load AeroGenPipeline from a diffusers-format directory.
+
+        Args:
+            pretrained_model_name_or_path: Path to the diffusers-format
+                directory or HuggingFace repo ID.
+            device: Device to load the model onto.
+
+        Returns:
+            An AeroGenPipeline instance.
+
+        Example::
+            pipe = AeroGenPipeline.from_pretrained(
+                "/root/worksapce/models/BiliSakura/AeroGen"
+            )
+            pipe = pipe.to("cuda")
+        """
+        path = Path(pretrained_model_name_or_path)
+        if not path.exists():
+            from huggingface_hub import snapshot_download
+
+            path = Path(snapshot_download(pretrained_model_name_or_path))
+        path = path.resolve()
+
+        def load_custom_component(name: str):
+            comp_path = path / name
+            with open(comp_path / "config.json") as f:
+                cfg = json.load(f)
+            params = dict(cfg.get("params") or {})
+            params.pop("ckpt_path", None)
+            params.pop("ignore_keys", None)
+            cfg["params"] = params
+            config = OmegaConf.create(cfg)
+            component = instantiate_from_config(config)
+
+            safetensors_path = comp_path / "diffusion_pytorch_model.safetensors"
+            bin_path = comp_path / "diffusion_pytorch_model.bin"
+            if safetensors_path.exists():
+                import safetensors.torch
+
+                state = safetensors.torch.load_file(str(safetensors_path))
+            elif bin_path.exists():
+                try:
+                    state = torch.load(bin_path, map_location="cpu", weights_only=True)
+                except TypeError:
+                    state = torch.load(bin_path, map_location="cpu")
+            else:
+                raise FileNotFoundError(
+                    f"No weights in {comp_path} "
+                    "(expected diffusion_pytorch_model.safetensors or .bin)"
+                )
+            component.load_state_dict(state, strict=True)
+            component.eval()
+            return component
+
+        scheduler = DDIMScheduler.from_pretrained(path / "scheduler")
+        unet = load_custom_component("unet")
+        vae = load_custom_component("vae")
+        text_encoder = load_custom_component("text_encoder")
+        condition_encoder = load_custom_component("condition_encoder")
+
+        pipeline_config_path = path / "pipeline_config.json"
+        scale_factor = 0.18215
+        if pipeline_config_path.exists():
+            with open(pipeline_config_path) as f:
+                pipeline_config = json.load(f)
+            scale_factor = pipeline_config.get("scale_factor", scale_factor)
+
+        pipe = cls(
+            unet=unet,
+            scheduler=scheduler,
+            vae=vae,
+            text_encoder=text_encoder,
+            condition_encoder=condition_encoder,
+            scale_factor=scale_factor,
+        )
+
+        if device is not None:
+            pipe = pipe.to(device)
+        return pipe
 
     def _encode_prompt(self, prompt: Union[str, List[str]]) -> torch.Tensor:
         """Encode text prompt(s) using the frozen CLIP text encoder."""
