@@ -141,7 +141,7 @@ def main():
     pipe = AeroGenPipeline.from_pretrained_checkpoint(
         config_path=config_path,
         checkpoint_path=ckpt_path,
-        device="cpu",  # Use CPU to reduce memory pressure during conversion
+        device="cpu",
     )
 
     output_dir = Path(args.output_dir)
