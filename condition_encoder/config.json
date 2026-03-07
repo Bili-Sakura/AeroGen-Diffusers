@@ -1,0 +1,7 @@
+{
+  "target": "condition_encoder.rbox_encoder.RBoxEncoder",
+  "params": {
+    "in_dim": 768,
+    "out_dim": 768
+  }
+}

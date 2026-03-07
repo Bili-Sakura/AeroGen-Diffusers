@@ -1,63 +1,105 @@
-# [CVPR 25] AeroGen: Enhancing Remote Sensing Object Detection with Diffusion-Driven Data Generation
+---
+license: apache-2.0
+library_name: diffusers
+tags:
+  - aerogen
+  - remote-sensing
+  - object-detection
+  - latent-diffusion
+  - bounding-box
+  - arxiv:2411.15497
+pipeline_tag: text-to-image
+---
 
-<a href='https://arxiv.org/abs/2411.15497'><img src='https://img.shields.io/badge/Paper-Arxiv-red'></a>  <a href=#citation><img src='https://img.shields.io/badge/Paper-BibTex-Green'></a> 
-<a href='https://openaccess.thecvf.com/content/CVPR2025/html/Tang_AeroGen_Enhancing_Remote_Sensing_Object_Detection_with_Diffusion-Driven_Data_Generation_CVPR_2025_paper.html'><img src='https://img.shields.io/badge/Paper-CVPR-yellow'></a>
-<a href='https://huggingface.co/Sonetto702/AeroGen'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-AeroGen_Model-blue'></a>
+# AeroGen-Diffusers
 
+**Convert AeroGen from checkpoint to diffusers format.** AeroGen generates aerial images conditioned on bounding boxes (horizontal or rotated) and object categories. This project provides conversion scripts and a native `AeroGenPipeline` for the [HuggingFace Diffusers](https://github.com/huggingface/diffusers) ecosystem.
 
-- **AeroGen** AeroGen is the first model to simultaneously support horizontal and rotated bounding box condition generation, thus enabling the generation of high-quality synthetic images that meet specific layout and object category requirements.
+> Source: [Sonetto702/AeroGen](https://huggingface.co/Sonetto702/AeroGen). Paper: [AeroGen: Enhancing Remote Sensing Object Detection with Diffusion-Driven Data Generation](https://arxiv.org/abs/2411.15497).
 
-<div align=center>
-<img src="imgs/display.png" height="100%" width="100%"/>
-</div>
+## Conversion
 
-## 🗓️ TODOs
+### Standard conversion (requires ~12GB+ RAM or 24GB VRAM)
 
-- [x] Release pretrained models.
-- [x] Release inference code.
-- [x] Release training code
-- [ ] Release Gradio UI.
-
-## 🚀 Getting Started
-
-### Conda environment setup
-prepare the environment
-
-```bash
-conda env create -f environment.yaml
-conda activate aerogen
-```
-You can download pre-trained models from this [huggingface url](https://huggingface.co/Sonetto702/AeroGen) and put it to `./ckpt/` folder.
-
-### ⚡️Quick Generation
-
-You can the following code to generate images more quickly by:
-```bash
-python src/inference/inference.py
-```
-
-#### Using the HuggingFace Diffusers Pipeline
-
-AeroGen also provides a native [HuggingFace Diffusers](https://github.com/huggingface/diffusers) custom pipeline (`AeroGenPipeline`). This wraps the model components in a standard `DiffusionPipeline` interface with a `DDIMScheduler`:
+The checkpoint is ~9.5GB. Use **GPU** (`--device cuda`) to load into VRAM and avoid RAM OOM:
 
 ```bash
-python src/inference/inference_pipeline.py
+cd projects/AeroGen-Diffusers
+conda activate rsgen  # or aerogen
+
+python convert_to_diffusers_lowvram.py \
+    --config_path configs/stable-diffusion/dual/v1-finetune-DIOR-R.yaml \
+    --repo_id Sonetto702/AeroGen \
+    --ckpt_filename aerogen_diorr_last.ckpt \
+    --output_dir /root/worksapce/models/BiliSakura/AeroGen \
+    --device cuda
 ```
 
-You can also use the pipeline directly in your own scripts:
+With a local checkpoint:
+
+```bash
+python convert_to_diffusers_lowvram.py \
+    --config_path configs/stable-diffusion/dual/v1-finetune-DIOR-R.yaml \
+    --ckpt_path ./ckpt/aerogen_diorr_last.ckpt \
+    --output_dir /root/worksapce/models/BiliSakura/AeroGen \
+    --device cuda
+```
+
+### Low-RAM / two-phase conversion
+
+If loading the full checkpoint causes OOM (e.g. on machines with <12GB RAM):
+
+1. **Phase 1** (on a machine with 16GB+ RAM): Extract component weights to safetensors:
+   ```bash
+   python convert_to_diffusers_lowvram.py \
+       --config_path configs/stable-diffusion/dual/v1-finetune-DIOR-R.yaml \
+       --repo_id Sonetto702/AeroGen \
+       --extract_to ./aerogen_extracted
+   ```
+
+2. **Phase 2** (on the target machine): Convert from extracted files:
+   ```bash
+   python convert_to_diffusers_lowvram.py \
+       --config_path configs/stable-diffusion/dual/v1-finetune-DIOR-R.yaml \
+       --output_dir /root/worksapce/models/BiliSakura/AeroGen \
+       --from_extracted ./aerogen_extracted
+   ```
+
+### Step-by-step conversion
+
+Run individual steps (1=scheduler, 2=unet, 3=vae, 4=text_encoder, 5=condition_encoder, 6=metadata):
+
+```bash
+python convert_to_diffusers_lowvram.py ... --step 2
+```
+
+## Output structure (converted model)
+
+| Component         | Path                 |
+|-------------------|----------------------|
+| UNet              | `unet/`              |
+| VAE               | `vae/`               |
+| Text encoder      | `text_encoder/`      |
+| Condition encoder | `condition_encoder/` |
+| Scheduler         | `scheduler/`         |
+| Pipeline          | `pipeline.py` (root) |
+| Config            | `model_index.json` (includes `scale_factor`) |
+
+## Usage
+
+The model repo is **self-contained** — no external code repo needed. Add only the model directory to `PYTHONPATH`:
 
 ```python
-from pipeline_aerogen import AeroGenPipeline
+import sys
+sys.path.insert(0, "/root/worksapce/models/BiliSakura/AeroGen")
 
-# Load from config + checkpoint
-pipeline = AeroGenPipeline.from_pretrained_checkpoint(
-    config_path="configs/stable-diffusion/dual/v1-finetune-DIOR-R.yaml",
-    checkpoint_path="./ckpt/aerogen_diorr_last.ckpt",
-    device="cuda",
-)
+from pipeline import AeroGenPipeline
 
-# Generate images
-result = pipeline(
+pipe = AeroGenPipeline.from_pretrained("/root/worksapce/models/BiliSakura/AeroGen")
+pipe = pipe.to("cuda")
+
+# Conditioning: bboxes (B, N, 8) rotated, category_conditions (B, N, 768), mask_conditions, mask_vector
+result = pipe(
     prompt="an aerial image with airplane parked on the ground",
     bboxes=bboxes,               # (B, N, 8) rotated bbox coords
     category_conditions=cats,     # (B, N, 768) category embeddings
@@ -67,54 +109,38 @@ result = pipeline(
     guidance_scale=7.5,
 )
 
-# result.images is a list of PIL images
-result.images[0].save("output.jpg")
-```
-You can find the relevant layout files for the presentation in `./demo/` where you can find the relevant layout files for the display.
-The following is the example of the generated image.
-<div align=center>
-<img src="imgs/display1.png" height="80%" width="80%"/>
-</div>
-
-## Training Datasets Preperation
-We use the DIOR-R dataset as an example to show how to set training dataset.
-Download DIOR-R dataset from [url](https://gcheng-nwpu.github.io/) and save in `./datasets/`. 
-```
-├── datasets
-│   ├── DIOR-VOC
-│   │   ├── Annotations
-│   │   │   ├── Oriented_Bounding_Boxes
-│   │   │       ├── ... (annotation files, e.g., .xml)
-│   │   ├── VOC2007
-│   │   │   ├── JPEGImages
-│   │   │   │   ├── ... (image files, e.g., .jpg, .png)
-│   │   │   ├── ImageSets
-│   │   │   │   ├── Main
-│   │   │   │       ├── train.txt
-│   ├── category_embeddings.npy
+images = result.images  # List of PIL images
 ```
 
+### Conditioning requirements
 
-## 🎶 Model Training
+- **bboxes**: Rotated box coords `(B, N, 8)` or axis-aligned `(B, N, 4)`
+- **category_conditions**: CLIP embeddings per object, `(B, N, 768)`
+- **mask_conditions**: Spatial masks `(B, N, H, W)`
+- **mask_vector**: Binary valid-object indicators `(B, N)`
 
-The following demonstrates the model training process under the DIOR-R dataset, firstly preparing the pytorch environment and the training dataset in [DATASETS](datasets/README.md), then downloading the SD weights fine-tuned on remote sensing images to the ckpt folder at this [url](https://huggingface.co/Sonetto702/AeroGen) & put it to `./ckpt/`, and finally executing the following commands in sequence:
+See `demo/` and `src/inference/` in the original [AeroGen](https://github.com/Sonettoo/AeroGen) repo for layout preparation.
 
-```bash
-conda activate aerogen
-python src/train/prepare_weight_r.py
-bash configs/stable-diffusion/dual/train_r.sh
-```
-The more information and options an find in `./main.py` and `./configs/stable-diffusion/dual/v1-finetune-DIOR-R.yaml`
+## Project structure
 
-## 📡 Contact
-If you have any questions about the paper or the code, feel free to email me at [aryswph@gmail.com](mailto:aryswph@gmail.com). This ensures I can promptly notice and respond!
+| Path                    | Description                          |
+|-------------------------|--------------------------------------|
+| `convert_to_diffusers.py`       | Original conversion (loads full model) |
+| `convert_to_diffusers_lowvram.py` | Low-VRAM conversion (component-wise)   |
+| `pipeline_aerogen.py`    | AeroGenPipeline definition            |
+| `bldm/`                 | BLDM model (condition_tokenizer)      |
+| `ldm/`                  | LDM modules (UNet, VAE, encoders)     |
+| `configs/`              | YAML configs                          |
 
-## 💕 Acknowledgments:
-This repo is built upon [Stable Diffusion](https://github.com/CompVis/stable-diffusion/tree/main), [ControlNet](https://github.com/lllyasviel/ControlNet/tree/main), [CLIP](https://github.com/openai/CLIP), [GLIGEN](https://github.com/gligen/GLIGEN/tree/master). Sincere thanks to their excellent work!
+## Model sources
 
+- **Source**: [Sonetto702/AeroGen](https://huggingface.co/Sonetto702/AeroGen)
+- **Paper**: [AeroGen: Enhancing Remote Sensing Object Detection with Diffusion-Driven Data Generation](https://arxiv.org/abs/2411.15497)
+- **Original repo**: [Sonettoo/AeroGen](https://github.com/Sonettoo/AeroGen)
 
 ## Citation
-```
+
+```bibtex
 @article{tang2024aerogen,
   title={AeroGen: Enhancing Remote Sensing Object Detection with Diffusion-Driven Data Generation},
   author={Tang, Datao and Cao, Xiangyong and Wu, Xuan and Li, Jialin and Yao, Jing and Bai, Xueru and Meng, Deyu},

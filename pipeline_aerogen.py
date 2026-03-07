@@ -18,19 +18,32 @@ Usage:
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Union
 
+# Ensure model repo is on path for trust_remote_code / custom_pipeline loading
+_pipeline_dir = Path(__file__).resolve().parent
+if str(_pipeline_dir) not in sys.path:
+    sys.path.insert(0, str(_pipeline_dir))
+
 import einops
 import numpy as np
 import torch
+import yaml
 from diffusers import DDIMScheduler, DiffusionPipeline
 from diffusers.utils import BaseOutput
-from omegaconf import OmegaConf
 from PIL import Image
 
-from ldm.util import instantiate_from_config
+from modular_pipeline import (
+    ensure_ldm_path,
+    ensure_ldm_path_from_config,
+    load_component,
+    load_components,
+    create_scheduler,
+    _instantiate_from_config,
+)
 
 
 @dataclass
@@ -101,151 +114,53 @@ class AeroGenPipeline(DiffusionPipeline):
         checkpoint_path: str,
         device: str = "cuda",
     ) -> "AeroGenPipeline":
-        """Load an AeroGenPipeline from an OmegaConf config and checkpoint.
+        """Load an AeroGenPipeline from a YAML config and checkpoint.
 
-        Args:
-            config_path: Path to the YAML config file.
-            checkpoint_path: Path to the model checkpoint (.ckpt or .safetensors).
-            device: Device to load the model on.
-
-        Returns:
-            An AeroGenPipeline instance ready for inference.
+        DEPRECATED: ldm/bldm have been removed. Use from_pretrained() with a
+        diffusers-format model (converted via convert_to_diffusers_lowvram.py).
         """
-        config = OmegaConf.load(config_path)
-        model = instantiate_from_config(config.model).cpu()
-
-        _, extension = os.path.splitext(checkpoint_path)
-        if extension.lower() == ".safetensors":
-            import safetensors.torch
-
-            state_dict = safetensors.torch.load_file(
-                checkpoint_path, device="cpu"
-            )
-        else:
-            load_kw = {"map_location": torch.device("cpu")}
-            try:
-                state_dict = torch.load(checkpoint_path, **load_kw, weights_only=True)
-            except (TypeError, Exception):
-                load_kw["weights_only"] = False
-                state_dict = torch.load(checkpoint_path, **load_kw)
-            state_dict = state_dict.get("state_dict", state_dict)
-
-        model.load_state_dict(state_dict)
-        model = model.to(device)
-        model.eval()
-
-        # Extract sub-components from the loaded BLDM model
-        unet = model.model.diffusion_model
-        vae = model.first_stage_model
-        text_encoder = model.cond_stage_model
-        condition_encoder = model.condition_tokenizer
-
-        # Read scheduler parameters from config
-        model_params = config.model.params
-        scale_factor = model_params.get("scale_factor", 0.18215)
-
-        scheduler = DDIMScheduler(
-            num_train_timesteps=model_params.get("timesteps", 1000),
-            beta_start=model_params.get("linear_start", 0.00085),
-            beta_end=model_params.get("linear_end", 0.0120),
-            beta_schedule="scaled_linear",
-            clip_sample=False,
-            set_alpha_to_one=False,
-            prediction_type="epsilon",
+        raise NotImplementedError(
+            "from_pretrained_checkpoint is no longer supported (ldm/bldm removed). "
+            "Use AeroGenPipeline.from_pretrained() with a diffusers-format model."
         )
-
-        pipeline = cls(
-            unet=unet,
-            scheduler=scheduler,
-            vae=vae,
-            text_encoder=text_encoder,
-            condition_encoder=condition_encoder,
-            scale_factor=scale_factor,
-        )
-        pipeline = pipeline.to(device)
-        return pipeline
 
     @classmethod
     def from_pretrained(
         cls,
         pretrained_model_name_or_path: Union[str, Path],
         device: Optional[Union[str, torch.device]] = None,
+        subfolder: Optional[str] = None,
         **kwargs,
-    ) -> "AeroGenPipeline":
+    ) -> Union["AeroGenPipeline", torch.nn.Module]:
         """Load AeroGenPipeline from a diffusers-format directory.
+
+        Supports native diffusers loading via DiffusionPipeline.from_pretrained(..., trust_remote_code=True).
+        When subfolder is provided (e.g. by diffusers for component loading), returns only that component.
 
         Args:
             pretrained_model_name_or_path: Path to the diffusers-format
                 directory or HuggingFace repo ID.
             device: Device to load the model onto.
+            subfolder: If set, load only this component (unet, vae, text_encoder, condition_encoder).
 
         Returns:
-            An AeroGenPipeline instance.
-
-        Example::
-            pipe = AeroGenPipeline.from_pretrained(
-                "/root/worksapce/models/BiliSakura/AeroGen"
-            )
-            pipe = pipe.to("cuda")
+            An AeroGenPipeline instance, or a single component if subfolder is set.
         """
-        path = Path(pretrained_model_name_or_path)
-        if not path.exists():
-            from huggingface_hub import snapshot_download
+        path = ensure_ldm_path(pretrained_model_name_or_path)
 
-            path = Path(snapshot_download(pretrained_model_name_or_path))
-        path = path.resolve()
+        # Single-component loading (for diffusers trust_remote_code component loading)
+        subfolder = kwargs.pop("subfolder", subfolder)
+        if subfolder in ("unet", "vae", "text_encoder", "condition_encoder"):
+            return load_component(path, subfolder)
 
-        def load_custom_component(name: str):
-            comp_path = path / name
-            with open(comp_path / "config.json") as f:
-                cfg = json.load(f)
-            params = dict(cfg.get("params") or {})
-            params.pop("ckpt_path", None)
-            params.pop("ignore_keys", None)
-            cfg["params"] = params
-            config = OmegaConf.create(cfg)
-            component = instantiate_from_config(config)
-
-            safetensors_path = comp_path / "diffusion_pytorch_model.safetensors"
-            bin_path = comp_path / "diffusion_pytorch_model.bin"
-            if safetensors_path.exists():
-                import safetensors.torch
-
-                state = safetensors.torch.load_file(str(safetensors_path))
-            elif bin_path.exists():
-                try:
-                    state = torch.load(bin_path, map_location="cpu", weights_only=True)
-                except TypeError:
-                    state = torch.load(bin_path, map_location="cpu")
-            else:
-                raise FileNotFoundError(
-                    f"No weights in {comp_path} "
-                    "(expected diffusion_pytorch_model.safetensors or .bin)"
-                )
-            component.load_state_dict(state, strict=True)
-            component.eval()
-            return component
-
-        scheduler = DDIMScheduler.from_pretrained(path / "scheduler")
-        unet = load_custom_component("unet")
-        vae = load_custom_component("vae")
-        text_encoder = load_custom_component("text_encoder")
-        condition_encoder = load_custom_component("condition_encoder")
-
-        pipeline_config_path = path / "pipeline_config.json"
-        scale_factor = 0.18215
-        if pipeline_config_path.exists():
-            with open(pipeline_config_path) as f:
-                pipeline_config = json.load(f)
-            scale_factor = pipeline_config.get("scale_factor", scale_factor)
-
+        components = load_components(path)
         pipe = cls(
-            unet=unet,
-            scheduler=scheduler,
-            vae=vae,
-            text_encoder=text_encoder,
-            condition_encoder=condition_encoder,
-            scale_factor=scale_factor,
+            unet=components["unet"],
+            scheduler=components["scheduler"],
+            vae=components["vae"],
+            text_encoder=components["text_encoder"],
+            condition_encoder=components["condition_encoder"],
+            scale_factor=components["scale_factor"],
         )
 
         if device is not None:

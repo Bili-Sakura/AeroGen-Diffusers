@@ -192,32 +192,33 @@ def main():
     save_custom_component(pipe.condition_encoder, cond_enc_config, cond_path, safe_serialization)
     print(f"  Saved condition_encoder -> {cond_path}")
 
-    # 6. Save model_index.json
+    # 6. Save model_index.json (scale_factor integrated, no pipeline_config.json)
     model_index = {
-        "_class_name": "AeroGenPipeline",
+        "_class_name": ["pipeline", "AeroGenPipeline"],
         "_diffusers_version": "0.25.0",
-        "condition_encoder": ["pipeline_aerogen", "AeroGenPipeline"],
+        "condition_encoder": ["pipeline", "AeroGenPipeline"],
         "scheduler": ["diffusers", "DDIMScheduler"],
-        "text_encoder": ["pipeline_aerogen", "AeroGenPipeline"],
-        "unet": ["pipeline_aerogen", "AeroGenPipeline"],
-        "vae": ["pipeline_aerogen", "AeroGenPipeline"],
+        "text_encoder": ["pipeline", "AeroGenPipeline"],
+        "unet": ["pipeline", "AeroGenPipeline"],
+        "vae": ["pipeline", "AeroGenPipeline"],
+        "scale_factor": pipe.vae_scale_factor,
     }
     with open(output_dir / "model_index.json", "w") as f:
         json.dump(model_index, f, indent=2)
     print(f"  Saved model_index.json")
 
-    # 7. Copy pipeline
-    pipeline_src = _script_dir / "pipeline_aerogen.py"
-    pipeline_dst = output_dir / "pipeline_aerogen"
-    pipeline_dst.mkdir(exist_ok=True)
-    shutil.copy(pipeline_src, pipeline_dst / "pipeline_aerogen.py")
-    (pipeline_dst / "__init__.py").write_text("from .pipeline_aerogen import AeroGenPipeline\n")
-    print(f"  Saved pipeline_aerogen")
+    # 7. Copy pipeline to root
+    shutil.copy(_script_dir / "pipeline_aerogen.py", output_dir / "pipeline.py")
+    print(f"  Saved pipeline.py")
 
-    # 8. Pipeline config
-    pipeline_config = {"scale_factor": pipe.vae_scale_factor}
-    with open(output_dir / "pipeline_config.json", "w") as f:
-        json.dump(pipeline_config, f, indent=2)
+    # 8. Bundle ldm and bldm (self-contained, no external repo needed)
+    for subdir in ("ldm", "bldm"):
+        src = _script_dir / subdir
+        dst = output_dir / subdir
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    print(f"  Saved ldm/, bldm/")
 
     print(f"\nDone! Diffusers-format model saved to {output_dir}")
     print("Load with: AeroGenPipeline.from_pretrained('<path>')")
