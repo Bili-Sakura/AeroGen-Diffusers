@@ -16,6 +16,7 @@ Or with local checkpoint:
 """
 
 import argparse
+import gc
 import json
 import shutil
 from pathlib import Path
@@ -140,7 +141,7 @@ def main():
     pipe = AeroGenPipeline.from_pretrained_checkpoint(
         config_path=config_path,
         checkpoint_path=ckpt_path,
-        device=args.device,
+        device="cpu",  # Use CPU to reduce memory pressure during conversion
     )
 
     output_dir = Path(args.output_dir)
@@ -161,12 +162,14 @@ def main():
     unet_path = output_dir / "unet"
     save_custom_component(pipe.unet, unet_config, unet_path, safe_serialization)
     print(f"  Saved unet -> {unet_path}")
+    gc.collect()
 
     # 3. Save vae
     vae_config = model_params.first_stage_config
     vae_path = output_dir / "vae"
     save_custom_component(pipe.vae, vae_config, vae_path, safe_serialization)
     print(f"  Saved vae -> {vae_path}")
+    gc.collect()
 
     # 4. Save text_encoder (FrozenCLIPEmbedder)
     text_config = model_params.get("cond_stage_config")
